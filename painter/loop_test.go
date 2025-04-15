@@ -1,106 +1,229 @@
 package painter
 
 import (
+	"errors"
+	"golang.org/x/exp/shiny/screen"
+	"golang.org/x/image/colornames"
+	"golang.org/x/image/draw"
 	"image"
 	"image/color"
-	"image/draw"
-	"reflect"
 	"testing"
-
-	"golang.org/x/exp/shiny/screen"
 )
 
-func TestLoop_Post(t *testing.T) {
-	var (
-		l  Loop
-		tr testReceiver
-	)
-	l.Receiver = &tr
+type MockReceiver struct {
+	callCount int
+}
 
-	var testOps []string
+func (r *MockReceiver) Update(_ screen.Texture) {
+	r.callCount++
+}
 
-	l.Start(mockScreen{})
-	l.Post(logOp(t, "do white fill", WhiteFill))
-	l.Post(logOp(t, "do green fill", GreenFill))
-	l.Post(UpdateOp)
+type MockScreen struct{}
 
-	for i := 0; i < 3; i++ {
-		go l.Post(logOp(t, "do green fill", GreenFill))
-	}
+func (s MockScreen) NewBuffer(_ image.Point) (screen.Buffer, error) {
+	return nil, errors.New("not implemented")
+}
+func (s MockScreen) NewTexture(_ image.Point) (screen.Texture, error) {
+	return nil, errors.New("not implemented")
+}
+func (s MockScreen) NewWindow(_ *screen.NewWindowOptions) (screen.Window, error) {
+	return nil, errors.New("not implemented")
+}
 
-	l.Post(OperationFunc(func(screen.Texture) {
-		testOps = append(testOps, "op 1")
-		l.Post(OperationFunc(func(screen.Texture) {
-			testOps = append(testOps, "op 2")
-		}))
-	}))
-	l.Post(OperationFunc(func(screen.Texture) {
-		testOps = append(testOps, "op 3")
-	}))
+type MockTexture struct{}
 
-	l.StopAndWait()
+func (t MockTexture) Release()                                                 {}
+func (t MockTexture) Size() image.Point                                        { return image.Point{} }
+func (t MockTexture) Bounds() image.Rectangle                                  { return image.Rectangle{} }
+func (t MockTexture) Upload(_ image.Point, _ screen.Buffer, _ image.Rectangle) {}
+func (t MockTexture) Fill(_ image.Rectangle, _ color.Color, _ draw.Op)         {}
 
-	if tr.lastTexture == nil {
-		t.Fatal("Texture was not updated")
-	}
-	mt, ok := tr.lastTexture.(*mockTexture)
-	if !ok {
-		t.Fatal("Unexpected texture", tr.lastTexture)
-	}
-	if mt.Colors[0] != color.White {
-		t.Error("First color is not white:", mt.Colors)
-	}
-	if len(mt.Colors) != 2 {
-		t.Error("Unexpected size of colors:", mt.Colors)
-	}
+type Checker struct {
+	expect int
+	ch     chan struct{}
+}
 
-	if !reflect.DeepEqual(testOps, []string{"op 1", "op 2", "op 3"}) {
-		t.Error("Bad order:", testOps)
+func (c Checker) wait() {
+	for i := 0; i < c.expect; i++ {
+		<-c.ch
 	}
 }
 
-func logOp(t *testing.T, msg string, op OperationFunc) OperationFunc {
-	return func(tx screen.Texture) {
-		t.Log(msg)
-		op(tx)
+func (c Checker) signal() {
+	c.ch <- struct{}{}
+}
+
+func newChecker(count int) Checker {
+	return Checker{expect: count, ch: make(chan struct{}, count)}
+}
+
+func TestSingleFillColor(t *testing.T) {
+	ops := OperationList{
+		Fill{Color: color.RGBA{G: 0x44, A: 0xff}},
+		Fill{Color: color.White},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	if loop.state.backgroundColor.Color != color.White {
+		t.Errorf("Expected white background, got %v", loop.state.backgroundColor.Color)
 	}
 }
 
-type testReceiver struct {
-	lastTexture screen.Texture
+func TestEmptyOperationList(t *testing.T) {
+	loop := Loop{Receiver: &MockReceiver{}}
+	loop.Start(MockScreen{})
+	loop.Post(OperationList{})
+
+	if loop.state.backgroundColor.Color != colornames.Lime ||
+		loop.state.backgroundRect != nil ||
+		loop.state.figureCenters != nil {
+		t.Error("Initial state is incorrect")
+	}
 }
 
-func (tr *testReceiver) Update(t screen.Texture) {
-	tr.lastTexture = t
+func TestMultipleFills(t *testing.T) {
+	ops := OperationList{
+		Fill{Color: color.RGBA{G: 0x33, A: 0xdd}},
+		Fill{Color: color.RGBA{R: 0xaa, A: 0xff}},
+		Fill{Color: color.Black},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	if loop.state.backgroundColor.Color != color.Black {
+		t.Errorf("Expected black background, got %v", loop.state.backgroundColor.Color)
+	}
 }
 
-type mockScreen struct{}
+func TestStoreLastRect(t *testing.T) {
+	ops := OperationList{
+		Bgrect{X1: 0.1, Y1: 0.1, X2: 0.4, Y2: 0.4},
+		Bgrect{X1: 0.2, Y1: 0.2, X2: 0.5, Y2: 0.5},
+	}
 
-func (m mockScreen) NewBuffer(size image.Point) (screen.Buffer, error) {
-	panic("implement me")
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	expected := Bgrect{X1: 0.2, Y1: 0.2, X2: 0.5, Y2: 0.5}
+	if *loop.state.backgroundRect != expected {
+		t.Errorf("Expected %v, got %v", expected, *loop.state.backgroundRect)
+	}
 }
 
-func (m mockScreen) NewTexture(size image.Point) (screen.Texture, error) {
-	return new(mockTexture), nil
+func TestAddAndMoveFigures(t *testing.T) {
+	ops := OperationList{
+		Figure{X: 0.1, Y: 0.1},
+		Figure{X: 0.3, Y: 0.3},
+		Move{X: 0.7, Y: 0.2},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	moved := Figure{X: 0.7, Y: 0.2}
+	if *loop.state.figureCenters[0] != moved || *loop.state.figureCenters[1] != moved {
+		t.Error("Figures not moved correctly")
+	}
 }
 
-func (m mockScreen) NewWindow(opts *screen.NewWindowOptions) (screen.Window, error) {
-	panic("implement me")
+func TestResetFunctionality(t *testing.T) {
+	ops := OperationList{
+		Figure{X: 0.1, Y: 0.1},
+		Bgrect{X1: 0.1, Y1: 0.1, X2: 0.2, Y2: 0.2},
+		Fill{Color: color.RGBA{G: 0xbb, A: 0xee}},
+		Reset{},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	if loop.state.figureCenters != nil || loop.state.backgroundRect != nil || loop.state.backgroundColor.Color != color.Black {
+		t.Error("Reset did not clear state properly")
+	}
 }
 
-type mockTexture struct {
-	Colors []color.Color
+func TestUpdateCall(t *testing.T) {
+	ops := OperationList{
+		Figure{X: 0.4, Y: 0.4},
+		Update{},
+	}
+
+	receiver := &MockReceiver{}
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: receiver, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.currentTexture = MockTexture{}
+	loop.Post(ops)
+	checker.wait()
+
+	if receiver.callCount != 1 {
+		t.Errorf("Expected Update to be called once, got %d", receiver.callCount)
+	}
 }
 
-func (m *mockTexture) Release() {}
+func TestAddFigureOnly(t *testing.T) {
+	ops := OperationList{
+		Figure{X: 0.1, Y: 0.1},
+		Figure{X: 0.2, Y: 0.2},
+	}
 
-func (m *mockTexture) Size() image.Point { return size }
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
 
-func (m *mockTexture) Bounds() image.Rectangle {
-	return image.Rectangle{Max: m.Size()}
+	if len(loop.state.figureCenters) != 2 {
+		t.Errorf("Expected 2 figures, got %d", len(loop.state.figureCenters))
+	}
 }
 
-func (m *mockTexture) Upload(dp image.Point, src screen.Buffer, sr image.Rectangle) {}
-func (m *mockTexture) Fill(dr image.Rectangle, src color.Color, op draw.Op) {
-	m.Colors = append(m.Colors, src)
+func TestMoveWithoutFigures(t *testing.T) {
+	ops := OperationList{
+		Move{X: 0.5, Y: 0.5},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	if loop.state.figureCenters != nil {
+		t.Error("Expected no figures to move, but got some")
+	}
+}
+
+func TestResetOnEmptyState(t *testing.T) {
+	ops := OperationList{
+		Reset{},
+	}
+
+	checker := newChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: checker.signal}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	checker.wait()
+
+	if loop.state.figureCenters != nil || loop.state.backgroundRect != nil || loop.state.backgroundColor.Color != color.Black {
+		t.Error("Reset on empty state failed")
+	}
 }
