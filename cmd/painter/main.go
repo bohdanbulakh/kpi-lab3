@@ -3,31 +3,26 @@ package main
 import (
 	"net/http"
 
-	"github.com/roman-mazur/architecture-lab-3/painter"
-	"github.com/roman-mazur/architecture-lab-3/painter/lang"
-	"github.com/roman-mazur/architecture-lab-3/ui"
+	"github.com/bohdanbulakh/kpi-lab3/painter"
+	"github.com/bohdanbulakh/kpi-lab3/painter/lang"
+	"github.com/bohdanbulakh/kpi-lab3/ui"
 )
 
 func main() {
 	var (
-		pv ui.Visualizer // Візуалізатор створює вікно та малює у ньому.
-
-		// Потрібні для частини 2.
-		opLoop painter.Loop // Цикл обробки команд.
-		parser lang.Parser  // Парсер команд.
+		visualizer  ui.Visualizer
+		painterLoop painter.Loop
+		parser      lang.Parser
 	)
 
-	//pv.Debug = true
-	pv.Title = "Simple painter"
-
-	pv.OnScreenReady = opLoop.Start
-	opLoop.Receiver = &pv
+	visualizer.Title = "Painter"
+	visualizer.OnScreenReady = painterLoop.Start
+	painterLoop.Receiver = &visualizer
 
 	go func() {
-		http.Handle("/", lang.HttpHandler(&opLoop, &parser))
+		http.Handle("/", lang.HttpHandler(&painterLoop, &parser))
 		_ = http.ListenAndServe("localhost:17000", nil)
 	}()
 
-	pv.Main()
-	opLoop.StopAndWait()
+	visualizer.Main()
 }
