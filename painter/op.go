@@ -1,6 +1,8 @@
 package painter
 
 import (
+	"github.com/bohdanbulakh/kpi-lab3/ui"
+	"image"
 	"image/color"
 
 	"golang.org/x/exp/shiny/screen"
@@ -8,41 +10,97 @@ import (
 
 // Operation змінює вхідну текстуру.
 type Operation interface {
-	// Do виконує зміну операції, повертаючи true, якщо текстура вважається готовою для відображення.
-	Do(t screen.Texture) (ready bool)
+	Update(state *State)
 }
 
 // OperationList групує список операції в одну.
 type OperationList []Operation
 
-func (ol OperationList) Do(t screen.Texture) (ready bool) {
-	for _, o := range ol {
-		ready = o.Do(t) || ready
-	}
-	return
-}
-
 // UpdateOp операція, яка не змінює текстуру, але сигналізує, що текстуру потрібно розглядати як готову.
-var UpdateOp = updateOp{}
+var UpdateOp = Update{}
 
-type updateOp struct{}
+type Update struct{}
 
-func (op updateOp) Do(t screen.Texture) bool { return true }
+func (op Update) Update(_ *State) {}
 
-// OperationFunc використовується для перетворення функції оновлення текстури в Operation.
-type OperationFunc func(t screen.Texture)
-
-func (f OperationFunc) Do(t screen.Texture) bool {
-	f(t)
-	return false
+// Fill зафарбовує текстуру у відповідний колір
+type Fill struct {
+	Color color.Color
 }
 
-// WhiteFill зафарбовує тестуру у білий колір. Може бути викоистана як Operation через OperationFunc(WhiteFill).
-func WhiteFill(t screen.Texture) {
-	t.Fill(t.Bounds(), color.White, screen.Src)
+func (op Fill) Do(texture screen.Texture) {
+	texture.Fill(texture.Bounds(), op.Color, screen.Src)
 }
 
-// GreenFill зафарбовує тестуру у зелений колір. Може бути викоистана як Operation через OperationFunc(GreenFill).
-func GreenFill(t screen.Texture) {
-	t.Fill(t.Bounds(), color.RGBA{G: 0xff, A: 0xff}, screen.Src)
+func (op Fill) Update(state *State) {
+	state.backgroundColor = &op
+}
+
+type Reset struct{}
+
+// ResetOp операція очищує вікно
+var ResetOp = Reset{}
+
+func (op Reset) Update(state *State) {
+	state.backgroundColor = &Fill{Color: color.Black}
+	state.backgroundRect = nil
+	state.figureCenters = nil
+}
+
+// Bgrect операція додає чорний прямокутник на екран в певних координатах
+type Bgrect struct {
+	X1 float32
+	Y1 float32
+	X2 float32
+	Y2 float32
+}
+
+func (op Bgrect) Do(t screen.Texture) {
+	t.Fill(
+		image.Rect(
+			int(op.X1*float32(t.Size().X)),
+			int(op.Y1*float32(t.Size().Y)),
+			int(op.X2*float32(t.Size().X)),
+			int(op.Y2*float32(t.Size().Y)),
+		),
+		color.Black,
+		screen.Src,
+	)
+}
+
+func (op Bgrect) Update(state *State) {
+	state.backgroundRect = &op
+}
+
+// Figure операція додає фігуру варіанту на вказані координати
+type Figure struct {
+	X float32
+	Y float32
+}
+
+func (op Figure) Do(texture screen.Texture) {
+	ui.DrawFigure(
+		texture,
+		image.Pt(
+			int(op.X*float32(texture.Size().X)),
+			int(op.Y*float32(texture.Size().Y)),
+		),
+	)
+}
+
+func (op Figure) Update(state *State) {
+	state.figureCenters = append(state.figureCenters, &op)
+}
+
+// Move операція переміщує усі на відповідну кількість пікселів
+type Move struct {
+	X float32
+	Y float32
+}
+
+func (op Move) Update(state *State) {
+	for _, figureCenter := range state.figureCenters {
+		figureCenter.X = op.X
+		figureCenter.Y = op.Y
+	}
 }
